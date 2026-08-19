@@ -412,7 +412,8 @@ final class SentenceTranslationService {
             temperature: 0,
             maxTokens: estimatedMaxOutputTokens(for: text),
             stream: false,
-            thinkingOptions: thinkingOptions
+            thinkingOptions: thinkingOptions,
+            stop: Self.stopSequences(for: provider, model: configuration.model)
         )
 
         var request = URLRequest(url: url)
@@ -442,14 +443,21 @@ final class SentenceTranslationService {
                     messages: requestBody.messages,
                     temperature: requestBody.temperature,
                     maxTokens: requestBody.maxTokens,
-                    stream: requestBody.stream
+                    stream: requestBody.stream,
+                    stop: requestBody.stop
                 )
             )
             data = try await performProviderRequest(retryRequest, provider: provider.displayName)
         }
         let response = try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
-        let translation = response.choices.first?.message.content.text?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = response.choices.first?.message.content.text.map { raw in
+            var filter = LLMTranslationResponseFilter(
+                beginDelimiter: prompt.beginDelimiter,
+                endDelimiter: prompt.endDelimiter
+            )
+            return filter.finalized(from: raw)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         guard let translation, !translation.isEmpty else { return nil }
         return translation
@@ -488,7 +496,8 @@ final class SentenceTranslationService {
             temperature: 0,
             maxTokens: estimatedMaxOutputTokens(for: text),
             stream: true,
-            thinkingOptions: thinkingOptions
+            thinkingOptions: thinkingOptions,
+            stop: Self.stopSequences(for: provider, model: configuration.model)
         )
 
         var request = URLRequest(url: url)
@@ -503,8 +512,16 @@ final class SentenceTranslationService {
         }
 
         var accumulatedText = ""
+        var responseFilter = LLMTranslationResponseFilter(
+            beginDelimiter: prompt.beginDelimiter,
+            endDelimiter: prompt.endDelimiter
+        )
         func streamResponse(from request: URLRequest) async throws {
             accumulatedText = ""
+            responseFilter = LLMTranslationResponseFilter(
+                beginDelimiter: prompt.beginDelimiter,
+                endDelimiter: prompt.endDelimiter
+            )
 
             try await streamSSEData(from: request, provider: provider.displayName) { eventData in
                 guard eventData != "[DONE]" else { return }
@@ -519,6 +536,7 @@ final class SentenceTranslationService {
                     )
                 }
 
+                let hasFinishReason = response.choices?.contains { $0.finishReason != nil } == true
                 let deltaText = response.choices
                     .map { choices in
                         choices.compactMap { choice in
@@ -529,9 +547,16 @@ final class SentenceTranslationService {
                         .joined()
                     } ?? ""
 
-                guard !deltaText.isEmpty else { return }
+                guard !deltaText.isEmpty else {
+                    if hasFinishReason {
+                        responseFilter.markFinished()
+                    }
+                    return
+                }
+                guard !responseFilter.isFinished else { return }
                 accumulatedText += deltaText
-                await onPartialResult(accumulatedText)
+                responseFilter.append(deltaText)
+                await onPartialResult(responseFilter.displayableText)
             }
         }
 
@@ -550,13 +575,14 @@ final class SentenceTranslationService {
                     messages: requestBody.messages,
                     temperature: requestBody.temperature,
                     maxTokens: requestBody.maxTokens,
-                    stream: requestBody.stream
+                    stream: requestBody.stream,
+                    stop: requestBody.stop
                 )
             )
             try await streamResponse(from: retryRequest)
         }
 
-        let translation = accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = responseFilter.finalized().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !translation.isEmpty else { return nil }
         return translation
     }
@@ -603,10 +629,16 @@ final class SentenceTranslationService {
 
         let data = try await performProviderRequest(request, provider: provider.displayName)
         let response = try JSONDecoder().decode(AnthropicMessagesResponse.self, from: data)
-        let translation = response.content
-            .compactMap(\.text)
-            .joined()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var filter = LLMTranslationResponseFilter(
+            beginDelimiter: prompt.beginDelimiter,
+            endDelimiter: prompt.endDelimiter
+        )
+        let translation = filter.finalized(
+            from: response.content
+                .compactMap(\.text)
+                .joined()
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !translation.isEmpty else { return nil }
         return translation
@@ -654,6 +686,10 @@ final class SentenceTranslationService {
         }
 
         var accumulatedText = ""
+        var responseFilter = LLMTranslationResponseFilter(
+            beginDelimiter: prompt.beginDelimiter,
+            endDelimiter: prompt.endDelimiter
+        )
         try await streamSSEData(from: request, provider: provider.displayName) { eventData in
             let data = Data(eventData.utf8)
             let event = try JSONDecoder().decode(AnthropicStreamEvent.self, from: data)
@@ -674,10 +710,11 @@ final class SentenceTranslationService {
             }
 
             accumulatedText += deltaText
-            await onPartialResult(accumulatedText)
+            responseFilter.append(deltaText)
+            await onPartialResult(responseFilter.displayableText)
         }
 
-        let translation = accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = responseFilter.finalized().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !translation.isEmpty else { return nil }
         return translation
     }
@@ -753,14 +790,20 @@ final class SentenceTranslationService {
             data = try await performProviderRequest(retryRequest, provider: provider.displayName)
         }
         let response = try JSONDecoder().decode(GeminiGenerateContentResponse.self, from: data)
-        let translation = response.candidates?
-            .compactMap(\.content)
-            .flatMap(\.parts)
-            .compactMap(\.text)
-            .joined()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var filter = LLMTranslationResponseFilter(
+            beginDelimiter: prompt.beginDelimiter,
+            endDelimiter: prompt.endDelimiter
+        )
+        let translation = filter.finalized(
+            from: response.candidates?
+                .compactMap(\.content)
+                .flatMap(\.parts)
+                .compactMap(\.text)
+                .joined() ?? ""
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard let translation, !translation.isEmpty else { return nil }
+        guard !translation.isEmpty else { return nil }
         return translation
     }
 
@@ -815,8 +858,16 @@ final class SentenceTranslationService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var accumulatedText = ""
+        var responseFilter = LLMTranslationResponseFilter(
+            beginDelimiter: prompt.beginDelimiter,
+            endDelimiter: prompt.endDelimiter
+        )
         func streamResponse(from request: URLRequest) async throws {
             accumulatedText = ""
+            responseFilter = LLMTranslationResponseFilter(
+                beginDelimiter: prompt.beginDelimiter,
+                endDelimiter: prompt.endDelimiter
+            )
 
             try await streamSSEData(from: request, provider: provider.displayName) { eventData in
                 let data = Data(eventData.utf8)
@@ -829,7 +880,8 @@ final class SentenceTranslationService {
 
                 guard !deltaText.isEmpty else { return }
                 accumulatedText += deltaText
-                await onPartialResult(accumulatedText)
+                responseFilter.append(deltaText)
+                await onPartialResult(responseFilter.displayableText)
             }
         }
 
@@ -855,7 +907,7 @@ final class SentenceTranslationService {
             try await streamResponse(from: retryRequest)
         }
 
-        let translation = accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = responseFilter.finalized().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !translation.isEmpty else { return nil }
         return translation
     }
@@ -1018,7 +1070,30 @@ final class SentenceTranslationService {
         \(endDelimiter)
         """
 
-        return LLMTranslationPrompt(system: system, user: user)
+        return LLMTranslationPrompt(
+            system: system,
+            user: user,
+            beginDelimiter: beginDelimiter,
+            endDelimiter: endDelimiter
+        )
+    }
+
+    /// Stop sequences sent to the server so generation terminates as soon as
+    /// the model emits its turn-ending token.
+    ///
+    /// Gemma 3 chat models end turns with `<end_of_turn>` (id 106), which is
+    /// not registered as an EOS token in many MLX conversions (their
+    /// `eos_token_id` remains `<eos>`, id 1). Servers that never see a stop
+    /// sequence keep generating and degenerate into a repetition loop of
+    /// `<end_of_turn>` fragments until `max_tokens` is exhausted.
+    private static func stopSequences(
+        for provider: SentenceTranslationSource.SourceType,
+        model: String
+    ) -> [String]? {
+        guard provider == .omlx else { return nil }
+        let lowered = model.lowercased()
+        guard lowered.contains("gemma") else { return nil }
+        return ["<end_of_turn>"]
     }
 
     private func languageDescription(for identifier: String) -> String {
@@ -1389,6 +1464,137 @@ private struct YoudaoTranslationResponse: Decodable {
 private struct LLMTranslationPrompt {
     let system: String
     let user: String
+    let beginDelimiter: String
+    let endDelimiter: String
+}
+
+/// Removes the request-specific sentinel delimiters from LLM output.
+///
+/// Weak instruction-following models may echo the delimiters injected into the
+/// prompt. Only the delimiters generated for the current request are removed: a
+/// leading begin delimiter and any trailing end delimiter (including partial
+/// prefixes that arrive split across streaming chunks) are dropped, while all
+/// other text is preserved verbatim.
+///
+/// Model control tokens (e.g. Gemma's `<end_of_turn>`) are also treated as
+/// terminators: when a full control token appears, the text up to and including
+/// it is dropped from the output and the stream is finished, so degenerate
+/// repetition tails produced when a server fails to stop on the model's
+/// turn-ending token are never surfaced.
+private struct LLMTranslationResponseFilter {
+    let beginDelimiter: String
+    let endDelimiter: String
+    let stopTokens: [String] = Self.defaultStopTokens
+
+    var accumulated = ""
+    var pending = ""
+    var expectingBegin = true
+    var skippingLeadingWhitespace = false
+    var done = false
+
+    /// True once the response is complete (stop token seen or stream finished).
+    var isFinished: Bool { done }
+
+    /// Text safe to display after all appended chunks.
+    var displayableText: String { accumulated }
+
+    /// Marks the response as finished, e.g. when the server reports a
+    /// `finish_reason`. Any later chunks are ignored.
+    mutating func markFinished() {
+        done = true
+    }
+
+    /// Model control tokens that terminate the response. Generation that fails
+    /// to stop on these tokens degenerates into a repetition loop; cutting the
+    /// response at the first occurrence keeps the output clean.
+    private static let defaultStopTokens = [
+        "<end_of_turn>",
+        "<start_of_turn>",
+        "<eos>",
+        "<bos>",
+        "</s>",
+        "<|end|>",
+        "<|endoftext|>",
+        "<|im_end|>",
+    ]
+
+    mutating func append(_ chunk: String) {
+        guard !done else { return }
+        for character in chunk {
+            if done { return }
+            process(character)
+        }
+    }
+
+    private mutating func process(_ character: Character) {
+        if skippingLeadingWhitespace {
+            if character.isWhitespace { return }
+            skippingLeadingWhitespace = false
+        }
+
+        if expectingBegin {
+            let candidate = pending + String(character)
+            if beginDelimiter.hasPrefix(candidate) {
+                pending = candidate
+                if pending == beginDelimiter {
+                    pending = ""
+                    expectingBegin = false
+                    skippingLeadingWhitespace = true
+                }
+                return
+            }
+            releasePending()
+            if character == "<" {
+                pending = String(character)
+                return
+            }
+            appendToAccumulated(String(character))
+            expectingBegin = false
+            return
+        }
+
+        let candidate = pending + String(character)
+        if endDelimiter.hasPrefix(candidate) {
+            pending = candidate
+            if pending == endDelimiter {
+                pending = ""
+                done = true
+            }
+            return
+        }
+        releasePending()
+        appendToAccumulated(String(character))
+    }
+
+    private mutating func appendToAccumulated(_ chunk: String) {
+        guard !done else { return }
+        accumulated += chunk
+        for token in stopTokens where accumulated.count >= token.count && accumulated.hasSuffix(token) {
+            accumulated.removeLast(token.count)
+            done = true
+            return
+        }
+    }
+
+    private mutating func releasePending() {
+        if !pending.isEmpty {
+            appendToAccumulated(pending)
+            pending = ""
+        }
+    }
+
+    /// Sanitizes a complete non-streaming response in one shot.
+    mutating func finalized(from raw: String) -> String {
+        append(raw)
+        return finalized()
+    }
+
+    /// Returns the final sanitized text; an incomplete delimiter prefix at the
+    /// end of the stream is dropped rather than surfaced.
+    mutating func finalized() -> String {
+        pending = ""
+        return accumulated
+    }
 }
 
 private struct OpenAIChatCompletionRequest: Encodable {
@@ -1400,6 +1606,7 @@ private struct OpenAIChatCompletionRequest: Encodable {
     let reasoningEffort: String?
     let thinking: Thinking?
     let think: ThinkValue?
+    let stop: [String]?
 
     var usesLowLatencyThinking: Bool {
         reasoningEffort != nil || thinking != nil || think != nil
@@ -1411,7 +1618,8 @@ private struct OpenAIChatCompletionRequest: Encodable {
         temperature: Double,
         maxTokens: Int,
         stream: Bool,
-        thinkingOptions: ThinkingOptions? = nil
+        thinkingOptions: ThinkingOptions? = nil,
+        stop: [String]? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -1421,6 +1629,7 @@ private struct OpenAIChatCompletionRequest: Encodable {
         self.reasoningEffort = thinkingOptions?.reasoningEffort
         self.thinking = thinkingOptions?.thinking
         self.think = thinkingOptions?.think
+        self.stop = stop
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1432,6 +1641,7 @@ private struct OpenAIChatCompletionRequest: Encodable {
         case reasoningEffort = "reasoning_effort"
         case thinking
         case think
+        case stop
     }
 
     struct Message: Encodable {
@@ -1495,6 +1705,14 @@ private struct OpenAIChatCompletionStreamResponse: Decodable {
         let delta: Delta?
         let message: Message?
         let text: OpenAIChatContent?
+        let finishReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case delta
+            case message
+            case text
+            case finishReason = "finish_reason"
+        }
     }
 
     struct Delta: Decodable {
