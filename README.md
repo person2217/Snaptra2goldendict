@@ -2,7 +2,7 @@
 
 SnapTraTranslator 的本地定制版：划词 / 取词后，直接把单词送入 **GoldenDict-ng** 查词，支持全屏视频场景下的取词。
 
-> 本仓库代码基于 [yelog/SnapTraTranslator](https://github.com/yelog/SnapTraTranslator) 修改定制，原项目版权归原作者所有。仓库名中的"2"代表从 SnapTra 到 GoldenDict-ng 的桥接。
+> 本仓库代码基于 [yelog/SnapTraTranslator](https://github.com/yelog/SnapTraTranslator) 修改定制，原项目版权归原作者所有。
 
 ## 功能
 
