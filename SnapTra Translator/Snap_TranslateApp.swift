@@ -87,8 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private weak var copyWordMenuItem: NSMenuItem?
     private weak var copySentenceMenuItem: NSMenuItem?
     private weak var continuousTranslationMenuItem: NSMenuItem?
-    private weak var wordSelectionLookupMenuItem: NSMenuItem?
-    private weak var wordCaptureLookupMenuItem: NSMenuItem?
+    private weak var goldendictIntegrationMenuItem: NSMenuItem?
     private weak var providerInfoMenuItem: NSMenuItem?
     #if DEBUG
     private weak var debugShowChannelMenuItem: NSMenuItem?
@@ -141,6 +140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         model.settings.$continuousTranslation
             .sink { [weak self] _ in
                 self?.scheduleVisibilityUpdate()
+            }
+            .store(in: &cancellables)
+
+        model.settings.$goldendictIntegrationEnabled
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateDynamicMenuItems()
+                }
             }
             .store(in: &cancellables)
 
@@ -312,25 +319,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(continuousItem)
         self.continuousTranslationMenuItem = continuousItem
 
-        // Selected-Text Lookup toggle (划词查询: option+q 查选中文本)
-        let wordSelectionLookupItem = NSMenuItem(
-            title: L("Selected-Text Lookup"),
-            action: #selector(toggleWordSelectionLookup),
+        let goldendictItem = NSMenuItem(
+            title: L("GoldenDict Integration"),
+            action: #selector(toggleGoldendictIntegration),
             keyEquivalent: ""
         )
-        wordSelectionLookupItem.target = self
-        menu.addItem(wordSelectionLookupItem)
-        self.wordSelectionLookupMenuItem = wordSelectionLookupItem
-
-        // Word Capture Lookup toggle (取词查询: 按住查词热键取词查词)
-        let wordCaptureLookupItem = NSMenuItem(
-            title: L("Word Capture Lookup"),
-            action: #selector(toggleWordCaptureLookup),
-            keyEquivalent: ""
-        )
-        wordCaptureLookupItem.target = self
-        menu.addItem(wordCaptureLookupItem)
-        self.wordCaptureLookupMenuItem = wordCaptureLookupItem
+        goldendictItem.target = self
+        menu.addItem(goldendictItem)
+        self.goldendictIntegrationMenuItem = goldendictItem
 
         // Pronunciation submenu
         let pronunciationSubmenu = NSMenu()
@@ -478,10 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         // Update continuous translation menu item state (checkmark)
         continuousTranslationMenuItem?.state = model.settings.continuousTranslation ? .on : .off
-
-        // Update lookup toggle states (checkmarks)
-        wordSelectionLookupMenuItem?.state = model.settings.wordSelectionLookupEnabled ? .on : .off
-        wordCaptureLookupMenuItem?.state = model.settings.wordCaptureLookupEnabled ? .on : .off
+        goldendictIntegrationMenuItem?.state = model.settings.goldendictIntegrationEnabled ? .on : .off
         
         // Update provider info item to show both Word and Sentence providers
         let wordProvider = model.settings.wordTTSProvider
@@ -545,12 +538,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         model.settings.continuousTranslation.toggle()
     }
 
-    @MainActor @objc private func toggleWordSelectionLookup() {
-        model.settings.wordSelectionLookupEnabled.toggle()
-    }
-
-    @MainActor @objc private func toggleWordCaptureLookup() {
-        model.settings.wordCaptureLookupEnabled.toggle()
+    @MainActor @objc private func toggleGoldendictIntegration() {
+        model.settings.setGoldendictIntegrationEnabled(!model.settings.goldendictIntegrationEnabled)
     }
 
     @objc private func quitApp() {

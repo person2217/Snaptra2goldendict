@@ -29,6 +29,10 @@ final class SettingsStoreMigrationTests: XCTestCase {
         AppSettingKey.playSentencePronunciation,
         AppSettingKey.copyWord,
         AppSettingKey.copySentence,
+        AppSettingKey.goldendictIntegrationEnabled,
+        AppSettingKey.goldendictCopyToClipboard,
+        AppSettingKey.selectedTextLookupEnabled,
+        AppSettingKey.selectedTextLookupHotkey,
         AppSettingKey.launchAtLogin,
         AppSettingKey.showMenuBarIcon,
         AppSettingKey.menuBarIconStyle,
@@ -91,6 +95,50 @@ final class SettingsStoreMigrationTests: XCTestCase {
         XCTAssertFalse(sources.contains { $0.type == .youdao && $0.isEnabled })
         XCTAssertFalse(sources.contains { $0.type == .google && $0.isEnabled })
         XCTAssertFalse(sources.contains { $0.type == .freeDictionaryAPI && $0.isEnabled })
+    }
+
+    func testGoldenDictIntegrationDefaultsToDisabled() {
+        let defaults = makeDefaults()
+
+        let settings = SettingsStore(defaults: defaults, loginItemStatus: false)
+
+        XCTAssertFalse(settings.goldendictIntegrationEnabled)
+        XCTAssertTrue(settings.goldendictCopyToClipboard)
+    }
+
+    func testSelectedTextLookupDefaultsToOptionQAndPersistsChanges() {
+        let defaults = makeDefaults()
+        let settings = SettingsStore(defaults: defaults, loginItemStatus: false)
+
+        XCTAssertTrue(settings.selectedTextLookupEnabled)
+        XCTAssertEqual(settings.selectedTextLookupHotkey, "option+q")
+
+        settings.selectedTextLookupHotkey = "control+shift+f"
+        XCTAssertEqual(defaults.string(forKey: AppSettingKey.selectedTextLookupHotkey), "control+shift+f")
+    }
+
+    func testEnablingGoldenDictPreservesContinuousTranslationSetting() {
+        let defaults = makeDefaults()
+        let settings = SettingsStore(defaults: defaults, loginItemStatus: false)
+
+        XCTAssertTrue(settings.continuousTranslation)
+        settings.setGoldendictIntegrationEnabled(true)
+
+        XCTAssertTrue(settings.goldendictIntegrationEnabled)
+        XCTAssertTrue(settings.continuousTranslation)
+        XCTAssertTrue(defaults.bool(forKey: AppSettingKey.continuousTranslation))
+    }
+
+    func testGoldenDictIntegrationLoadsPersistedContinuousTranslationState() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: AppSettingKey.goldendictIntegrationEnabled)
+        defaults.set(true, forKey: AppSettingKey.continuousTranslation)
+
+        let settings = SettingsStore(defaults: defaults, loginItemStatus: false)
+
+        XCTAssertTrue(settings.goldendictIntegrationEnabled)
+        XCTAssertTrue(settings.continuousTranslation)
+        XCTAssertTrue(defaults.bool(forKey: AppSettingKey.continuousTranslation))
     }
 
     func testMigrationPreservesSources() {

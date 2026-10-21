@@ -49,9 +49,8 @@ final class LearningService: ObservableObject {
     @Published var availableLanguageIdentifiers: [String] = []
 
     private static let wordSortDescriptors = [
-        // Most recently looked up first.
-        SortDescriptor(\WordRecord.lastLookupDate, order: .reverse),
         SortDescriptor(\WordRecord.lookupCount, order: .reverse),
+        SortDescriptor(\WordRecord.lastLookupDate, order: .reverse),
         SortDescriptor(\WordRecord.word, order: .forward),
     ]
 
@@ -179,7 +178,6 @@ final class LearningService: ObservableObject {
             }
 
             try modelContext.save()
-            scheduleDeferredRefresh()
         } catch {
             print("Failed to record word lookup: \(error)")
         }
@@ -200,14 +198,12 @@ final class LearningService: ObservableObject {
             if let record = try modelContext.fetch(descriptor).first {
                 guard record.updateDefinition(definitionText) else { return .unchanged }
                 try modelContext.save()
-                scheduleDeferredRefresh()
                 return .updated
             } else {
                 let record = WordRecord(word: normalizedWord, definitionText: definitionText)
                 guard record.definitionText != nil else { return .unchanged }
                 modelContext.insert(record)
                 try modelContext.save()
-                scheduleDeferredRefresh()
                 return .inserted
             }
         } catch {
@@ -360,21 +356,6 @@ final class LearningService: ObservableObject {
             print("Failed to fetch count: \(error)")
             return 0
         }
-    }
-
-    private var pendingRefreshWorkItem: DispatchWorkItem?
-
-    /// Coalesces refreshes triggered by lookups/definition updates so the learning
-    /// list stays in sync without reloading on every word during continuous translation.
-    private func scheduleDeferredRefresh() {
-        pendingRefreshWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                await self?.refreshAfterMutation()
-            }
-        }
-        pendingRefreshWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
     }
 
     private func refreshAfterMutation() async {

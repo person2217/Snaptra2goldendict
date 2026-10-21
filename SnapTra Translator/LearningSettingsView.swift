@@ -488,20 +488,21 @@ struct LearningSettingsView: View {
                 searchText: searchText,
                 sourceLanguageIdentifier: sourceLanguageFilter
             )
-            guard !rows.isEmpty else {
-                exportResultMessage = L("No learning words to export")
-                return
-            }
+            guard !rows.isEmpty else { return }
 
-            // Export directly to ~/Downloads — avoids the modal NSSavePanel which
-            // does not show reliably in this menu-bar-only (LSUIElement) app.
+            let panel = NSSavePanel()
+            panel.title = L("Export Learning Words")
+            panel.nameFieldStringValue = "snaptra-learning-words.\(format.fileExtension)"
+            panel.canCreateDirectories = true
+            panel.allowedContentTypes = [.plainText]
+
+            let response = panel.runModal()
+            guard response == .OK, let url = panel.url else { return }
+
             do {
                 let content = LearningExportService.export(rows: rows, format: format)
-                let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-                    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
-                let url = downloadsURL.appendingPathComponent("snaptra-learning-words.\(format.fileExtension)")
                 try content.write(to: url, atomically: true, encoding: .utf8)
-                exportResultMessage = L("Exported %lld words", rows.count) + "\n" + url.path
+                exportResultMessage = L("Exported %lld words", rows.count)
             } catch {
                 exportResultMessage = L("Export failed: %@", error.localizedDescription)
             }

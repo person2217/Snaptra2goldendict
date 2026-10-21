@@ -1,35 +1,10 @@
 import AppKit
 import Combine
 import Foundation
-import os
 import SwiftUI
 import SwiftData
 import Translation
 import UserNotifications
-
-/// 把划词/取词排查信息写入应用沙盒 Documents，便于直接读取诊断。
-enum LookupDebugLog {
-    private static let formatter = ISO8601DateFormatter()
-
-    static var fileURL: URL {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return dir.appendingPathComponent("snaptra-lookup.log")
-    }
-
-    static func append(_ message: String) {
-        let line = "[\(formatter.string(from: Date()))] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: fileURL) {
-                defer { try? handle.close() }
-                handle.seekToEndOfFile()
-                handle.write(data)
-            } else {
-                try? data.write(to: fileURL)
-            }
-        }
-    }
-}
 
 struct OverlayContent: Equatable {
     var word: String
@@ -95,6 +70,18 @@ struct OverlayContent: Equatable {
     nonisolated private static func isChineseLanguageIdentifier(_ identifier: String) -> Bool {
         Locale.Language(identifier: identifier).minimalIdentifier == "zh"
     }
+}
+
+enum OverlayPronunciationKind: Equatable {
+    case word
+    case sentence
+}
+
+struct OverlayPronunciationRequest: Equatable {
+    let id: UUID
+    let kind: OverlayPronunciationKind
+    let text: String
+    let languageIdentifier: String?
 }
 
 nonisolated struct LearningDefinitionCommit: Equatable, Sendable {
@@ -474,7 +461,7 @@ private enum OcrWordCandidateLoadResult: Sendable {
     case captureFailed
     case noWord(captureRect: CGRect, wordBoxes: [CGRect])
     case word(OcrWordCandidate)
-    case failed(message: String)
+    case failed(message: String, captureRect: CGRect)
     case cancelled
 }
 
@@ -486,6 +473,8 @@ final class AppModel: ObservableObject {
     @Published var overlayPreferredWidth: CGFloat? = nil
     @Published var isParagraphOverlayPinned: Bool = false
     @Published var isTapKeptOverlayPresented: Bool = false
+    @Published private(set) var speechPlaybackState: SpeechPlaybackState = .idle
+    @Published private(set) var activePronunciationRequest: OverlayPronunciationRequest?
 
     @Published var settings: SettingsStore
     let permissions: PermissionManager
@@ -501,6 +490,7 @@ final class AppModel: ObservableObject {
     }
 
     private let hotkeyManager = HotkeyManager()
+    private let selectedTextLookupShortcutMonitor = SelectedTextLookupShortcutMonitor()
     private let captureService = ScreenCaptureService()
     private let ocrService = OCRService()
     private let selectedTextService = SelectedTextService()
@@ -575,6 +565,15 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        speechService.$playbackState
+            .sink { [weak self] state in
+                self?.speechPlaybackState = state
+                if case .idle = state {
+                    self?.activePronunciationRequest = nil
+                }
+            }
+            .store(in: &cancellables)
+
         // Forward DictionaryDownloadManager changes to AppModel so SwiftUI redraws
         self.dictionaryDownload.objectWillChange
             .sink { [weak self] _ in
@@ -599,9 +598,13 @@ final class AppModel: ObservableObject {
                 .store(in: &cancellables)
         }
         bindSettings()
+        selectedTextLookupShortcutMonitor.onTrigger = { [weak self] in
+            self?.handleSelectedTextLookupShortcut()
+        }
         resolvedPermissions.$status
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+                self?.refreshSelectedTextLookupShortcut()
             }
             .store(in: &cancellables)
         hotkeyManager.onTrigger = { [weak self] in
@@ -630,14 +633,6 @@ final class AppModel: ObservableObject {
             }
         }
         resolvedPermissions.refreshStatus()
-        LookupDebugLog.append(
-            "startup accessibility=\(resolvedPermissions.status.accessibility) "
-            + "screenRecording=\(resolvedPermissions.status.screenRecording) "
-            + "channel=\(DistributionChannel.current)"
-        )
-        Self.lookupLogger.notice(
-            "startup: accessibility=\(resolvedPermissions.status.accessibility) screenRecording=\(resolvedPermissions.status.screenRecording)"
-        )
         Task {
             await checkLanguageAvailability(notifyUser: false)
         }
@@ -665,104 +660,6 @@ final class AppModel: ObservableObject {
         startLookup(at: mouseLocation)
     }
 
-    /// 划词查询：全局快捷键（默认 option+q）触发后查选中文本
-    func handleWordSelectionLookupHotkey() {
-        guard settings.wordSelectionLookupEnabled else {
-            LookupDebugLog.append("hotkey fired but feature disabled")
-            Self.lookupLogger.notice("selected-text hotkey fired but feature disabled")
-            return
-        }
-        LookupDebugLog.append("hotkey fired combo=\(settings.wordSelectionLookupHotkey)")
-        Self.lookupLogger.notice(
-            "selected-text hotkey fired: combo=\(self.settings.wordSelectionLookupHotkey, privacy: .public)"
-        )
-        Task { @MainActor [weak self] in
-            await self?.performWordSelectionLookup()
-        }
-    }
-
-    private func performWordSelectionLookup() async {
-        guard settings.wordSelectionLookupEnabled else { return }
-        guard permissions.status.accessibility else {
-            LookupDebugLog.append("lookup skipped: no accessibility permission")
-            Self.lookupLogger.notice("selected-text lookup skipped: no accessibility permission")
-            return
-        }
-
-        // 先尝试直接读取当前选中的文本；读取不到时回退到剪贴板探测
-        // （模拟 Cmd+C 读取选中内容），保证划词后无论鼠标在哪都能查到。
-        var snapshot = await selectedTextService.currentSelectionSnapshot(
-            mouseLocation: NSEvent.mouseLocation
-        )
-        if let snapshot {
-            LookupDebugLog.append("AX snapshot ok text=\(self.truncate(snapshot.text))")
-            Self.lookupLogger.notice(
-                "selected-text lookup: AX snapshot text=\"\(self.truncate(snapshot.text), privacy: .public)\""
-            )
-        } else {
-            LookupDebugLog.append("AX probe nil, trying clipboard fallback")
-            Self.lookupLogger.notice("selected-text lookup: AX probe returned nil, trying clipboard fallback")
-        }
-        if snapshot == nil {
-            snapshot = await selectedTextService.clipboardFallbackSnapshot(
-                isEnabled: settings.selectedTextClipboardFallback
-            )
-        }
-        if let snapshot {
-            LookupDebugLog.append("clipboard fallback ok text=\(self.truncate(snapshot.text))")
-            Self.lookupLogger.notice(
-                "selected-text lookup: clipboard fallback text=\"\(self.truncate(snapshot.text), privacy: .public)\""
-            )
-        }
-
-        // 最后的兜底：直接读剪贴板（用户可能已手动复制）
-        if snapshot == nil {
-            let rawClipboard = NSPasteboard.general.string(forType: .string)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !rawClipboard.isEmpty {
-                snapshot = SelectedTextSnapshot(
-                    text: rawClipboard,
-                    selectedRange: NSRange(location: 0, length: 0),
-                    bounds: nil,
-                    sourceAppIdentifier: nil,
-                    source: .clipboard
-                )
-                LookupDebugLog.append("direct clipboard text=\(self.truncate(rawClipboard))")
-                Self.lookupLogger.notice(
-                    "selected-text lookup: direct clipboard text=\"\(self.truncate(rawClipboard), privacy: .public)\""
-                )
-            }
-        }
-        guard let snapshot else {
-            LookupDebugLog.append("no text found")
-            Self.lookupLogger.notice("selected-text lookup: no text found")
-            return
-        }
-
-        let text = snapshot.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let lookedUp = GoldendictBridge.shared.lookup(
-            word: text,
-            method: settings.goldendictQueryMethod,
-            copyToClipboard: settings.goldendictCopyToClipboard
-        )
-        LookupDebugLog.append("goldendict lookup=\(lookedUp) text=\(self.truncate(text))")
-        Self.lookupLogger.notice(
-            "selected-text lookup: goldendict lookup=\(lookedUp) text=\"\(self.truncate(text), privacy: .public)\""
-        )
-        if !lookedUp {
-            // GoldenDict 不可用时退化为仅复制选中文本，便于手动查词
-            let pasteboard = NSPasteboard.general
-            pasteboard.declareTypes([.string], owner: nil)
-            pasteboard.setString(text, forType: .string)
-        }
-    }
-
-    private static let lookupLogger = Logger(
-        subsystem: "org.yelog.SnapTraTranslate",
-        category: "lookup"
-    )
-
     func handleHotkeyRelease() {
         finishHotkeyRelease(allowWordOverlayPersistence: false)
     }
@@ -780,7 +677,9 @@ final class AppModel: ObservableObject {
             )
 
         isHotkeyActive = false
-        debugOverlayWindowController.hide()
+        if !settings.debugShowOcrRegion {
+            debugOverlayWindowController.hide()
+        }
         paragraphHighlightWindowController.hide()
 
         if shouldKeepSentenceOverlayVisible {
@@ -854,6 +753,61 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func playOverlayPronunciation(kind: OverlayPronunciationKind) {
+        let request: OverlayPronunciationRequest?
+        switch kind {
+        case .word:
+            guard case .result(let content) = overlayState else { return }
+            let text = content.word.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            request = OverlayPronunciationRequest(
+                id: UUID(),
+                kind: kind,
+                text: text,
+                languageIdentifier: content.sourceLanguageIdentifier
+            )
+        case .sentence:
+            guard case .paragraphResult(let content) = overlayState,
+                  let originalText = content.originalText else { return }
+            let text = originalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            request = OverlayPronunciationRequest(
+                id: UUID(),
+                kind: kind,
+                text: text,
+                languageIdentifier: content.sourceLanguageIdentifier
+            )
+        }
+
+        guard let request else { return }
+        activePronunciationRequest = request
+        let provider = kind == .word ? settings.wordTTSProvider : settings.sentenceTTSProvider
+        speechService.speak(
+            request.text,
+            language: request.languageIdentifier.flatMap { Locale.Language(identifier: $0).languageCode?.identifier },
+            provider: provider,
+            useAmericanAccent: settings.englishAccent.isAmerican,
+            requestID: request.id
+        )
+    }
+
+    func isPronunciationPlaying(kind: OverlayPronunciationKind) -> Bool {
+        let requestMatches = activePronunciationRequest?.kind == kind
+        let automaticKindMatches: Bool = switch (kind, activeLookupMode) {
+        case (.word, .word), (.sentence, .selectedTextSentence), (.sentence, .ocrSentence):
+            true
+        default:
+            false
+        }
+        guard requestMatches || (activePronunciationRequest == nil && automaticKindMatches) else { return false }
+        switch speechPlaybackState {
+        case .loading, .playing:
+            return true
+        case .idle, .failed:
+            return false
+        }
+    }
+
     /// 手动关闭气泡（用于非持续翻译模式）
     func dismissOverlay() {
         activeLookupMode = .word
@@ -911,10 +865,6 @@ final class AppModel: ObservableObject {
 
     private func beginDoubleTapAutomaticParagraphLookup() {
         guard permissions.status.screenRecording else { return }
-        if settings.debugShowOcrRegion {
-            settings.debugShowOcrRegion = false
-            debugOverlayWindowController.hide()
-        }
         activeLookupMode = .ocrSentence
         stopMouseTracking()
         let mouseLocation = NSEvent.mouseLocation
@@ -1139,6 +1089,9 @@ final class AppModel: ObservableObject {
         activeParagraphRect = rect
         overlayPreferredWidth = max(320, rect.width)
         paragraphHighlightWindowController.show(at: rect)
+        if settings.debugShowOcrRegion {
+            debugOverlayWindowController.show(at: rect)
+        }
         setOverlayAnchor(CGPoint(x: rect.midX, y: rect.minY))
         if ParagraphRegionLoadingOverlayPolicy.shouldShowLoadingOverlay(
             presentationMode: settings.sentenceTranslationPresentationMode
@@ -1278,6 +1231,10 @@ final class AppModel: ObservableObject {
         }
         guard !Task.isCancelled, activeLookupID == lookupID else { return .cancelled }
 
+        if settings.debugShowOcrRegion {
+            debugOverlayWindowController.show(at: capture.region.rect)
+        }
+
         let normalizedPoint = normalizedCursorPoint(mouseLocation, in: capture.region.rect)
         do {
             performance?.begin(.ocr)
@@ -1315,7 +1272,8 @@ final class AppModel: ObservableObject {
             }
             performance?.end(.ocr, outcome: .failed)
             return .failed(
-                message: L("Translation failed: \(error.localizedDescription)")
+                message: L("Translation failed: \(error.localizedDescription)"),
+                captureRect: capture.region.rect
             )
         }
     }
@@ -1368,7 +1326,10 @@ final class AppModel: ObservableObject {
                 request: request
             )
 
-        case .failed(let message):
+        case .failed(let message, let captureRect):
+            if settings.debugShowOcrRegion {
+                debugOverlayWindowController.show(at: captureRect)
+            }
             updateOverlay(state: .error(message), anchor: request.mouseLocation)
 
         case .cancelled:
@@ -1402,23 +1363,25 @@ final class AppModel: ObservableObject {
             )
         }
 
-        // 取词查询开启时：取词后直接查 GoldenDict-ng，跳过 SnapTra 翻译面板
-        if settings.wordCaptureLookupEnabled {
+        if settings.goldendictIntegrationEnabled {
+            // A second hotkey tap within the gesture window switches this lookup
+            // to sentence translation. Let that decision cancel the word lookup
+            // before opening GoldenDict-ng.
+            try? await Task.sleep(for: .milliseconds(275))
+            guard !Task.isCancelled,
+                  activeLookupID == lookupID,
+                  activeLookupMode == .word else { return }
+
             let lookedUp = GoldendictBridge.shared.lookup(
                 word: word,
-                method: settings.goldendictQueryMethod,
                 copyToClipboard: settings.goldendictCopyToClipboard
             )
             if !lookedUp {
-                // GoldenDict 不可用时退化为仅复制单词，便于手动查词
                 let pasteboard = NSPasteboard.general
-                pasteboard.declareTypes([.string], owner: nil)
+                pasteboard.clearContents()
                 pasteboard.setString(word, forType: .string)
             }
             hideOverlay()
-
-            // Persist the lookup into the learning list so it shows up in
-            // "Word Learning" even when the SnapTra panel is skipped.
             await learningService.recordLookup(
                 word: word,
                 sourceLanguageIdentifier: languagePair.sourceIdentifier
@@ -1426,7 +1389,6 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // 取词查询关闭时：恢复原版 SnapTra 的翻译面板行为
         guard shouldPerformLookup(for: word) else {
             hideOverlay()
             return
@@ -1699,6 +1661,10 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if settings.debugShowOcrRegion {
+            debugOverlayWindowController.show(at: capture.region.rect)
+        }
+
         let normalizedPoint = normalizedCursorPoint(mouseLocation, in: capture.region.rect)
 
         do {
@@ -1965,6 +1931,9 @@ final class AppModel: ObservableObject {
             paragraphHighlightWindowController.hide()
         } catch {
             paragraphHighlightWindowController.hide()
+            if settings.debugShowOcrRegion {
+                debugOverlayWindowController.show(at: capture.region.rect)
+            }
             let content = ParagraphOverlayContent(
                 originalText: nil,
                 translationState: .failed("Translation failed: \(error.localizedDescription)")
@@ -1984,6 +1953,10 @@ final class AppModel: ObservableObject {
             )
             updateOverlay(state: .paragraphResult(content), anchor: anchor)
             return
+        }
+
+        if settings.debugShowOcrRegion {
+            debugOverlayWindowController.show(at: capture.region.rect)
         }
 
         if usesImageSentenceTranslation {
@@ -2838,7 +2811,10 @@ final class AppModel: ObservableObject {
     }
 
     func updateOverlay(state: OverlayState, anchor: CGPoint? = nil) {
-        guard isHotkeyActive || isParagraphOverlayPresented || isTapKeptOverlayPresented || !settings.continuousTranslation else { return }
+        guard isHotkeyActive
+                || isParagraphOverlayPresented
+                || isTapKeptOverlayPresented
+                || !settings.continuousTranslation else { return }
 
         if let anchor {
             setOverlayAnchor(anchor)
@@ -2934,12 +2910,13 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        Publishers.CombineLatest(
-            settings.$wordSelectionLookupEnabled,
-            settings.$wordSelectionLookupHotkey
+        Publishers.CombineLatest3(
+            settings.$goldendictIntegrationEnabled,
+            settings.$selectedTextLookupEnabled,
+            settings.$selectedTextLookupHotkey
         )
-        .sink { [weak self] _, _ in
-            self?.updateWordSelectionHotkeyRegistration()
+        .sink { [weak self] _, _, _ in
+            self?.refreshSelectedTextLookupShortcut()
         }
         .store(in: &cancellables)
 
@@ -3032,6 +3009,43 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
     }
 
+    private func refreshSelectedTextLookupShortcut() {
+        selectedTextLookupShortcutMonitor.start(
+            shortcut: settings.selectedTextLookupHotkey,
+            isEnabled: settings.goldendictIntegrationEnabled && settings.selectedTextLookupEnabled,
+            hasAccessibilityPermission: permissions.status.accessibility
+        )
+    }
+
+    func setSelectedTextLookupShortcutRecording(_ isRecording: Bool) {
+        if isRecording {
+            selectedTextLookupShortcutMonitor.stop()
+        } else {
+            refreshSelectedTextLookupShortcut()
+        }
+    }
+
+    private func handleSelectedTextLookupShortcut() {
+        guard settings.goldendictIntegrationEnabled,
+              settings.selectedTextLookupEnabled,
+              permissions.status.accessibility else { return }
+        let mouseLocation = NSEvent.mouseLocation
+        Task { [weak self] in
+            guard let self,
+                  let snapshot = await self.selectedTextService.currentSelectionSnapshot(
+                    mouseLocation: mouseLocation
+                  ) else { return }
+            let selectedText = snapshot.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !selectedText.isEmpty,
+                  self.settings.goldendictIntegrationEnabled,
+                  self.settings.selectedTextLookupEnabled else { return }
+            _ = GoldendictBridge.shared.lookup(
+                word: selectedText,
+                copyToClipboard: self.settings.goldendictCopyToClipboard
+            )
+        }
+    }
+
     private func handleActiveSpaceChange() {
         captureService.invalidateCache()
 
@@ -3100,25 +3114,6 @@ final class AppModel: ObservableObject {
     private func restartHotkey() {
         guard !isHotkeyActive else { return }
         hotkeyManager.start(singleKey: settings.singleKey)
-    }
-
-    private func updateWordSelectionHotkeyRegistration() {
-        guard settings.wordSelectionLookupEnabled,
-              !settings.wordSelectionLookupHotkey.isEmpty else {
-            hotkeyManager.stopCombinationHotkey()
-            LookupDebugLog.append("register stopped (disabled or empty combo)")
-            Self.lookupLogger.notice("combination hotkey stopped (feature disabled or empty combo)")
-            return
-        }
-        LookupDebugLog.append("register combo=\(settings.wordSelectionLookupHotkey)")
-        Self.lookupLogger.notice(
-            "registering combination hotkey: combo=\(self.settings.wordSelectionLookupHotkey, privacy: .public)"
-        )
-        hotkeyManager.startCombinationHotkey(
-            combo: settings.wordSelectionLookupHotkey
-        ) { [weak self] in
-            self?.handleWordSelectionLookupHotkey()
-        }
     }
 
     private func handleTranslationSettingsChanged() {

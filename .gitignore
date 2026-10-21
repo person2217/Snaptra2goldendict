@@ -1,6 +1,28 @@
+# Agent directories
+.agent/
+.agents/
+.claude/
+
+# CodeGraph
+.codegraph/
+
+# macOS
 .DS_Store
-DerivedData/
+
+# Xcode
 build/
-*.xcuserstate
+!scripts/build/
+!scripts/build/*.sh
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
 xcuserdata/
-*.app
+*.xccheckout
+*.moved-aside
+*.xcuserstate

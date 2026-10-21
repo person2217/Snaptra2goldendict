@@ -53,27 +53,12 @@ enum DoubleTapSentenceTranslationMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum GoldendictQueryMethod: String, CaseIterable, Identifiable {
-    case urlScheme = "urlScheme"
-    case simulateHotkey = "simulateHotkey"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .urlScheme:
-            return L("Direct Call (URL Scheme)")
-        case .simulateHotkey:
-            return L("Simulate Global Hotkey")
-        }
-    }
-}
-
 enum DoubleTapSentenceTranslationAction: Equatable {
     case disabled
     case automaticOCR
     case manualRegionSelection
 }
+
 enum DoubleTapSentenceTranslationPolicy {
     static func resolve(
         isEnabled: Bool,
@@ -223,14 +208,10 @@ enum AppSettingKey {
     static let playSentencePronunciation = "playSentencePronunciation"
     static let copyWord = "copyWord"
     static let copySentence = "copySentence"
-    static let wordCopyOnlyMode = "wordCopyOnlyMode"
     static let goldendictIntegrationEnabled = "goldendictIntegrationEnabled"
-    static let goldendictQueryMethod = "goldendictQueryMethod"
-    static let goldendictClipboardHotkey = "goldendictClipboardHotkey"
     static let goldendictCopyToClipboard = "goldendictCopyToClipboard"
-    static let wordSelectionLookupEnabled = "wordSelectionLookupEnabled"
-    static let wordSelectionLookupHotkey = "wordSelectionLookupHotkey"
-    static let wordCaptureLookupEnabled = "wordCaptureLookupEnabled"
+    static let selectedTextLookupEnabled = "selectedTextLookupEnabled"
+    static let selectedTextLookupHotkey = "selectedTextLookupHotkey"
     static let launchAtLogin = "launchAtLogin"
     static let singleKey = "singleKey"
     static let sourceLanguage = "sourceLanguage"

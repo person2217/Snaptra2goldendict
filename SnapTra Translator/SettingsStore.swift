@@ -328,31 +328,17 @@ final class SettingsStore: ObservableObject {
     @Published var copySentence: Bool {
         didSet { defaults.set(copySentence, forKey: AppSettingKey.copySentence) }
     }
-    @Published var wordCopyOnlyMode: Bool {
-        didSet { defaults.set(wordCopyOnlyMode, forKey: AppSettingKey.wordCopyOnlyMode) }
-    }
-    @Published var goldendictIntegrationEnabled: Bool {
+    @Published private(set) var goldendictIntegrationEnabled: Bool {
         didSet { defaults.set(goldendictIntegrationEnabled, forKey: AppSettingKey.goldendictIntegrationEnabled) }
-    }
-    @Published var goldendictQueryMethod: GoldendictQueryMethod {
-        didSet { defaults.set(goldendictQueryMethod.rawValue, forKey: AppSettingKey.goldendictQueryMethod) }
-    }
-    @Published var goldendictClipboardHotkey: String {
-        didSet { defaults.set(goldendictClipboardHotkey, forKey: AppSettingKey.goldendictClipboardHotkey) }
     }
     @Published var goldendictCopyToClipboard: Bool {
         didSet { defaults.set(goldendictCopyToClipboard, forKey: AppSettingKey.goldendictCopyToClipboard) }
     }
-    /// 划词查询：选中文本后按快捷键查 GoldenDict-ng（默认 option+q，可自定义）
-    @Published var wordSelectionLookupEnabled: Bool {
-        didSet { defaults.set(wordSelectionLookupEnabled, forKey: AppSettingKey.wordSelectionLookupEnabled) }
+    @Published var selectedTextLookupEnabled: Bool {
+        didSet { defaults.set(selectedTextLookupEnabled, forKey: AppSettingKey.selectedTextLookupEnabled) }
     }
-    @Published var wordSelectionLookupHotkey: String {
-        didSet { defaults.set(wordSelectionLookupHotkey, forKey: AppSettingKey.wordSelectionLookupHotkey) }
-    }
-    /// 取词查询：按住查词热键（跟随"查词功能"设置）取词后查 GoldenDict-ng
-    @Published var wordCaptureLookupEnabled: Bool {
-        didSet { defaults.set(wordCaptureLookupEnabled, forKey: AppSettingKey.wordCaptureLookupEnabled) }
+    @Published var selectedTextLookupHotkey: String {
+        didSet { defaults.set(selectedTextLookupHotkey, forKey: AppSettingKey.selectedTextLookupHotkey) }
     }
     @Published var launchAtLogin: Bool {
         didSet { defaults.set(launchAtLogin, forKey: AppSettingKey.launchAtLogin) }
@@ -493,6 +479,11 @@ final class SettingsStore: ObservableObject {
     private static let llmProviderConfigurationsKey = "llmProviderConfigurations"
     private static let imageTranslationProviderConfigurationsKey = "imageTranslationProviderConfigurations"
 
+    /// Enables GoldenDict-ng lookup while leaving capture behavior unchanged.
+    func setGoldendictIntegrationEnabled(_ enabled: Bool) {
+        goldendictIntegrationEnabled = enabled
+    }
+
     init(defaults: UserDefaults = .standard, loginItemStatus: Bool? = nil) {
         self.defaults = defaults
 
@@ -517,22 +508,11 @@ final class SettingsStore: ObservableObject {
         let copySentenceValue = defaults.object(forKey: AppSettingKey.copySentence) as? Bool
         copyWord = copyWordValue ?? false
         copySentence = copySentenceValue ?? false
-        let wordCopyOnlyModeValue = defaults.object(forKey: AppSettingKey.wordCopyOnlyMode) as? Bool
-        wordCopyOnlyMode = wordCopyOnlyModeValue ?? false
-        let goldendictIntegrationEnabledValue = defaults.object(forKey: AppSettingKey.goldendictIntegrationEnabled) as? Bool
-        goldendictIntegrationEnabled = goldendictIntegrationEnabledValue ?? false
-        let goldendictQueryMethodValue = defaults.string(forKey: AppSettingKey.goldendictQueryMethod)
-        goldendictQueryMethod = GoldendictQueryMethod(rawValue: goldendictQueryMethodValue ?? "") ?? .urlScheme
-        let goldendictClipboardHotkeyValue = defaults.string(forKey: AppSettingKey.goldendictClipboardHotkey)
-        goldendictClipboardHotkey = goldendictClipboardHotkeyValue ?? ""
-        let goldendictCopyToClipboardValue = defaults.object(forKey: AppSettingKey.goldendictCopyToClipboard) as? Bool
-        goldendictCopyToClipboard = goldendictCopyToClipboardValue ?? true
-        let wordSelectionLookupEnabledValue = defaults.object(forKey: AppSettingKey.wordSelectionLookupEnabled) as? Bool
-        wordSelectionLookupEnabled = wordSelectionLookupEnabledValue ?? true
-        let wordSelectionLookupHotkeyValue = defaults.string(forKey: AppSettingKey.wordSelectionLookupHotkey)
-        wordSelectionLookupHotkey = wordSelectionLookupHotkeyValue ?? "option+q"
-        let wordCaptureLookupEnabledValue = defaults.object(forKey: AppSettingKey.wordCaptureLookupEnabled) as? Bool
-        wordCaptureLookupEnabled = wordCaptureLookupEnabledValue ?? true
+        let goldendictIntegrationValue = defaults.object(forKey: AppSettingKey.goldendictIntegrationEnabled) as? Bool ?? false
+        goldendictIntegrationEnabled = goldendictIntegrationValue
+        goldendictCopyToClipboard = defaults.object(forKey: AppSettingKey.goldendictCopyToClipboard) as? Bool ?? true
+        selectedTextLookupEnabled = defaults.object(forKey: AppSettingKey.selectedTextLookupEnabled) as? Bool ?? true
+        selectedTextLookupHotkey = defaults.string(forKey: AppSettingKey.selectedTextLookupHotkey) ?? "option+q"
 
         let launchAtLoginValue = defaults.object(forKey: AppSettingKey.launchAtLogin) as? Bool
         let loginStatus = loginItemStatus ?? LoginItemManager.isEnabled()
@@ -614,7 +594,7 @@ final class SettingsStore: ObservableObject {
 
         // Load auto update settings
         let autoCheckUpdatesValue = defaults.object(forKey: AppSettingKey.autoCheckUpdates) as? Bool
-        autoCheckUpdates = autoCheckUpdatesValue ?? false
+        autoCheckUpdates = autoCheckUpdatesValue ?? true
 
         let updateChannelValue = defaults.string(forKey: AppSettingKey.updateChannel)
         updateChannel = UpdateChannel(rawValue: updateChannelValue ?? "stable") ?? .stable
@@ -644,14 +624,10 @@ final class SettingsStore: ObservableObject {
         defaults.set(playSentencePronunciation, forKey: AppSettingKey.playSentencePronunciation)
         defaults.set(copyWord, forKey: AppSettingKey.copyWord)
         defaults.set(copySentence, forKey: AppSettingKey.copySentence)
-        defaults.set(wordCopyOnlyMode, forKey: AppSettingKey.wordCopyOnlyMode)
         defaults.set(goldendictIntegrationEnabled, forKey: AppSettingKey.goldendictIntegrationEnabled)
-        defaults.set(goldendictQueryMethod.rawValue, forKey: AppSettingKey.goldendictQueryMethod)
-        defaults.set(goldendictClipboardHotkey, forKey: AppSettingKey.goldendictClipboardHotkey)
         defaults.set(goldendictCopyToClipboard, forKey: AppSettingKey.goldendictCopyToClipboard)
-        defaults.set(wordSelectionLookupEnabled, forKey: AppSettingKey.wordSelectionLookupEnabled)
-        defaults.set(wordSelectionLookupHotkey, forKey: AppSettingKey.wordSelectionLookupHotkey)
-        defaults.set(wordCaptureLookupEnabled, forKey: AppSettingKey.wordCaptureLookupEnabled)
+        defaults.set(selectedTextLookupEnabled, forKey: AppSettingKey.selectedTextLookupEnabled)
+        defaults.set(selectedTextLookupHotkey, forKey: AppSettingKey.selectedTextLookupHotkey)
         defaults.set(launchAtLogin, forKey: AppSettingKey.launchAtLogin)
         defaults.set(showMenuBarIcon, forKey: AppSettingKey.showMenuBarIcon)
         defaults.set(menuBarIconStyle.rawValue, forKey: AppSettingKey.menuBarIconStyle)

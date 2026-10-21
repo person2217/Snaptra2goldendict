@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 import Translation
 
@@ -353,16 +354,18 @@ struct GeneralSettingsView: View {
                         action: { model.permissions.requestAndOpenScreenRecording() }
                     )
 
-                    Divider()
-                        .padding(.horizontal, 14)
-                        .opacity(0.5)
+                    if supportsSelectedTextTranslation {
+                        Divider()
+                            .padding(.horizontal, 14)
+                            .opacity(0.5)
 
-                    GeneralPermissionRow(
-                        icon: "figure.wave",
-                        title: L("Accessibility"),
-                        isGranted: model.permissions.status.accessibility,
-                        action: { model.permissions.requestAndOpenAccessibility() }
-                    )
+                        GeneralPermissionRow(
+                            icon: "figure.wave",
+                            title: L("Accessibility"),
+                            isGranted: model.permissions.status.accessibility,
+                            action: { model.permissions.requestAndOpenAccessibility() }
+                        )
+                    }
                 }
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -518,117 +521,52 @@ struct GeneralSettingsView: View {
                         .padding(.horizontal, 14)
                         .opacity(0.5)
 
-                    // ============ 划词查询（独立功能） ============
                     VStack(spacing: 0) {
                         ToggleRow(
-                            title: L("Selected-Text Lookup"),
-                            subtitle: L("Select text, then press the hotkey to look it up in GoldenDict-ng"),
-                            isOn: $model.settings.wordSelectionLookupEnabled
-                        )
-
-                        if model.settings.wordSelectionLookupEnabled {
-                            Divider()
-                                .padding(.horizontal, 14)
-                                .opacity(0.5)
-
-                            LookupHotkeyRecorder(
-                                hotkey: $model.settings.wordSelectionLookupHotkey,
-                                title: L("Selected-Text Lookup Hotkey"),
-                                subtitle: L("Hotkey pressed after selecting text (default Option+Q)")
+                            title: L("GoldenDict Integration"),
+                            subtitle: L("Look up the captured word in GoldenDict-ng"),
+                            isOn: Binding(
+                                get: { model.settings.goldendictIntegrationEnabled },
+                                set: { model.settings.setGoldendictIntegrationEnabled($0) }
                             )
-                        }
-                    }
-                    .lookupCardStyle()
-
-                    // ============ 取词查询（独立功能） ============
-                    VStack(spacing: 0) {
-                        ToggleRow(
-                            title: L("Word Capture Lookup"),
-                            subtitle: L("Hold the lookup hotkey to capture a word and look it up in GoldenDict-ng"),
-                            isOn: $model.settings.wordCaptureLookupEnabled
                         )
 
-                        if model.settings.wordCaptureLookupEnabled {
+                        if model.settings.goldendictIntegrationEnabled {
                             Divider()
                                 .padding(.horizontal, 14)
                                 .opacity(0.5)
 
-                            HStack(spacing: 12) {
-                                Text(L("Lookup Hotkey"))
-                                    .font(.system(size: 13, weight: .regular))
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                Menu {
-                                    ForEach(SingleKey.allCases, id: \.self) { key in
-                                        Button {
-                                            model.settings.singleKey = key
-                                        } label: {
-                                            Text(key.title)
-                                        }
-                                    }
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Text(model.settings.singleKey.title)
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(.primary)
-                                        Image(systemName: "chevron.up.chevron.down")
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color.accentColor.opacity(0.15))
+                            ToggleRow(
+                                title: L("Selected-Text Lookup"),
+                                subtitle: L("Look up selected text in GoldenDict-ng"),
+                                isOn: $model.settings.selectedTextLookupEnabled
+                            )
+
+                            if model.settings.selectedTextLookupEnabled {
+                                HStack {
+                                    Text(L("Selected-Text Lookup Hotkey"))
+                                        .font(.system(size: 13, weight: .medium))
+                                    Spacer(minLength: 8)
+                                    SelectedTextLookupShortcutRecorder(
+                                        shortcut: $model.settings.selectedTextLookupHotkey,
+                                        onRecordingChanged: model.setSelectedTextLookupShortcutRecording
                                     )
                                 }
-                                .menuStyle(.borderlessButton)
-                                .fixedSize()
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                        }
-                    }
-                    .lookupCardStyle()
-
-                    // ============ GoldenDict 查询方式（两个功能共用） ============
-                    if model.settings.wordSelectionLookupEnabled
-                        || model.settings.wordCaptureLookupEnabled {
-                        VStack(spacing: 0) {
-                            Text(L("GoldenDict Lookup Options"))
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .textCase(.uppercase)
-                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 14)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
+                                .padding(.vertical, 8)
+                            }
+
+                            Divider()
+                                .padding(.horizontal, 14)
+                                .opacity(0.5)
 
                             ToggleRow(
                                 title: L("Copy to Clipboard"),
-                                subtitle: L("Copy the looked-up text to the clipboard as well"),
+                                subtitle: L("Copy the captured word to the clipboard as well"),
                                 isOn: $model.settings.goldendictCopyToClipboard
                             )
 
-                            Divider()
-                                .padding(.horizontal, 14)
-                                .opacity(0.5)
-
-                            GoldendictQueryMethodPickerRow(
-                                method: $model.settings.goldendictQueryMethod
-                            )
-
-                            if model.settings.goldendictQueryMethod == .simulateHotkey {
-                                Divider()
-                                    .padding(.horizontal, 14)
-                                    .opacity(0.5)
-
-                                GoldendictHotkeyRecorder(
-                                    hotkey: $model.settings.goldendictClipboardHotkey
-                                )
-                            }
                         }
-                        .lookupCardStyle()
                     }
 
                     Divider()
@@ -911,160 +849,6 @@ struct DoubleTapSentenceTranslationModePickerRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-    }
-}
-
-struct GoldendictQueryMethodPickerRow: View {
-    @Binding var method: GoldendictQueryMethod
-
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L("GoldenDict Query Method"))
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(1)
-                Text(L("How SnapTra triggers the lookup in GoldenDict-ng"))
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(L("How SnapTra triggers the lookup in GoldenDict-ng"))
-            }
-            Spacer()
-            Picker("", selection: $method) {
-                ForEach(GoldendictQueryMethod.allCases) { method in
-                    Text(method.displayName).tag(method)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .tint(.accentColor)
-            .frame(width: 180, alignment: .trailing)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-}
-
-/// Records a hotkey combination like "option+q".
-struct GoldendictHotkeyRecorder: View {
-    @Binding var hotkey: String
-    var title: String = L("GoldenDict Clipboard Hotkey")
-    var subtitle: String = L("Set the same hotkey as the translate-clipboard hotkey in GoldenDict-ng preferences")
-    @State private var isRecording = false
-    @State private var monitor: Any?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer()
-            Button {
-                isRecording.toggle()
-                if isRecording {
-                    startRecording()
-                } else {
-                    stopRecording()
-                }
-            } label: {
-                Text(displayText)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(isRecording ? Color.accentColor : .primary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(isRecording ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(isRecording ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.2), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .help(L("Click to record the hotkey combination"))
-
-            if !hotkey.isEmpty && !isRecording {
-                Button {
-                    hotkey = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(L("Clear hotkey"))
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .onDisappear { stopRecording() }
-    }
-
-    private var displayText: String {
-        if isRecording { return L("Press hotkey…") }
-        if hotkey.isEmpty { return L("Click to set") }
-        return GoldendictHotkeyParser.displayString(for: hotkey) ?? hotkey
-    }
-
-    private func startRecording() {
-        stopRecording()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [self] event in
-            guard self.isRecording else { return event }
-            if event.keyCode == 0x35 { // Esc 取消
-                self.isRecording = false
-                self.stopRecording()
-                return nil
-            }
-            if let combo = GoldendictHotkeyParser.string(from: event) {
-                self.hotkey = combo
-                self.isRecording = false
-                self.stopRecording()
-                return nil
-            }
-            return event
-        }
-    }
-
-    private func stopRecording() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
-            self.monitor = nil
-        }
-    }
-}
-
-/// The hotkey recorder used for the selected-text lookup (划词查询).
-typealias LookupHotkeyRecorder = GoldendictHotkeyRecorder
-
-/// 卡片样式：把划词查询 / 取词查询分成两块独立区域
-private struct LookupCardStyle: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.background)
-                    .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
-                    .shadow(color: .black.opacity(0.02), radius: 1, x: 0, y: 1)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(.quaternary, lineWidth: 0.5)
-            )
-    }
-}
-
-private extension View {
-    func lookupCardStyle() -> some View {
-        modifier(LookupCardStyle())
     }
 }
 
@@ -1548,5 +1332,77 @@ struct MenuBarIconStylePickerRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+}
+
+private struct SelectedTextLookupShortcutRecorder: View {
+    @Binding var shortcut: String
+    let onRecordingChanged: (Bool) -> Void
+
+    @StateObject private var recorder = ShortcutRecorderController()
+
+    var body: some View {
+        Button {
+            recorder.begin(
+                onCapture: { shortcut = $0 },
+                onRecordingChanged: onRecordingChanged
+            )
+        } label: {
+            Text(recorder.isRecording
+                 ? L("Press a shortcut")
+                 : SelectedTextLookupShortcut.displayName(for: shortcut))
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .frame(maxWidth: .infinity)
+                .contentTransition(.numericText())
+        }
+        .buttonStyle(.bordered)
+        .frame(width: 132, height: 28)
+        .accessibilityLabel(L("Selected-Text Lookup Hotkey"))
+        .onDisappear {
+            recorder.cancel(onRecordingChanged: onRecordingChanged)
+        }
+    }
+}
+
+@MainActor
+private final class ShortcutRecorderController: ObservableObject {
+    @Published private(set) var isRecording = false
+
+    private var eventMonitor: Any?
+    private var onCapture: ((String) -> Void)?
+    private var onRecordingChanged: ((Bool) -> Void)?
+
+    func begin(onCapture: @escaping (String) -> Void, onRecordingChanged: @escaping (Bool) -> Void) {
+        guard eventMonitor == nil else { return }
+        self.onCapture = onCapture
+        self.onRecordingChanged = onRecordingChanged
+        isRecording = true
+        onRecordingChanged(true)
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if event.keyCode == 53 {
+                cancel(onRecordingChanged: self.onRecordingChanged)
+            } else if let shortcut = SelectedTextLookupShortcut.serialized(
+                keyCode: event.keyCode,
+                flags: CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+            ) {
+                self.onCapture?(shortcut)
+                cancel(onRecordingChanged: self.onRecordingChanged)
+            }
+            return nil
+        }
+    }
+
+    func cancel(onRecordingChanged handler: ((Bool) -> Void)? = nil) {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
+        guard isRecording else { return }
+        isRecording = false
+        onCapture = nil
+        let callback = handler ?? onRecordingChanged
+        onRecordingChanged = nil
+        callback?(false)
     }
 }
