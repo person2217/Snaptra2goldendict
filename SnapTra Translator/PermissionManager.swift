@@ -20,6 +20,12 @@ final class PermissionManager: ObservableObject {
         Task { await refreshStatusAsync() }
     }
 
+    func refreshAccessibilityStatus() {
+        let allowed = accessibilityStatus()
+        guard status.accessibility != allowed else { return }
+        status.accessibility = allowed
+    }
+
     func refreshStatusAsync() async {
         let screenRecordingAllowed = await screenRecordingStatus()
         let accessibilityAllowed = accessibilityStatus()

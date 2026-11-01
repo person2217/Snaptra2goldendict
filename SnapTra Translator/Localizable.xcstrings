@@ -1,6 +1,86 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Shortcut active — changes apply immediately": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcut active — changes apply immediately"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷键已生效，修改后立即更新"
+          }
+        }
+      }
+    },
+    "Shortcut inactive. Allow Accessibility access for this copy of SnapTra Translator.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcut inactive. Allow Accessibility access for this copy of SnapTra Translator."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷键未生效，请为当前版本的 SnapTra Translator 开启辅助功能权限。"
+          }
+        }
+      }
+    },
+    "Enable Accessibility": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Accessibility"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启辅助功能权限"
+          }
+        }
+      }
+    },
+    "Record a modifier key together with a letter or number.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Record a modifier key together with a letter or number."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请同时按下修饰键和字母或数字键。"
+          }
+        }
+      }
+    },
+    "Click to record a shortcut. Press Escape to cancel.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click to record a shortcut. Press Escape to cancel."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击后按下快捷键，按 Escape 取消。"
+          }
+        }
+      }
+    },
     "" : {
 
     },

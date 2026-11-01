@@ -354,7 +354,7 @@ struct GeneralSettingsView: View {
                         action: { model.permissions.requestAndOpenScreenRecording() }
                     )
 
-                    if supportsSelectedTextTranslation {
+                    if supportsSelectedTextTranslation || model.settings.goldendictIntegrationEnabled {
                         Divider()
                             .padding(.horizontal, 14)
                             .opacity(0.5)
@@ -554,6 +554,8 @@ struct GeneralSettingsView: View {
                                 }
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 8)
+
+                                selectedTextLookupShortcutStatus
                             }
 
                             Divider()
@@ -729,6 +731,42 @@ struct GeneralSettingsView: View {
                     await refreshLanguageStatuses()
                 }
             }
+        }
+    }
+}
+
+private extension GeneralSettingsView {
+    @ViewBuilder
+    var selectedTextLookupShortcutStatus: some View {
+        switch model.selectedTextLookupShortcutStatus {
+        case .disabled:
+            EmptyView()
+        case .listening:
+            Text(L("Shortcut active — changes apply immediately"))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+        case .needsAccessibility, .eventTapUnavailable:
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L("Shortcut inactive. Allow Accessibility access for this copy of SnapTra Translator."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                Button(L("Enable Accessibility")) {
+                    model.permissions.requestAndOpenAccessibility()
+                }
+                .font(.system(size: 11))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
+        case .invalidShortcut:
+            Text(L("Record a modifier key together with a letter or number."))
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
         }
     }
 }
@@ -1358,8 +1396,12 @@ private struct SelectedTextLookupShortcutRecorder: View {
         .buttonStyle(.bordered)
         .frame(width: 132, height: 28)
         .accessibilityLabel(L("Selected-Text Lookup Hotkey"))
+        .accessibilityValue(recorder.isRecording
+                            ? L("Press a shortcut")
+                            : SelectedTextLookupShortcut.displayName(for: shortcut))
+        .help(L("Click to record a shortcut. Press Escape to cancel."))
         .onDisappear {
-            recorder.cancel(onRecordingChanged: onRecordingChanged)
+            recorder.cancel()
         }
     }
 }
@@ -1369,6 +1411,7 @@ private final class ShortcutRecorderController: ObservableObject {
     @Published private(set) var isRecording = false
 
     private var eventMonitor: Any?
+    private var focusSubscription: AnyCancellable?
     private var onCapture: ((String) -> Void)?
     private var onRecordingChanged: ((Bool) -> Void)?
 
@@ -1378,22 +1421,29 @@ private final class ShortcutRecorderController: ObservableObject {
         self.onRecordingChanged = onRecordingChanged
         isRecording = true
         onRecordingChanged(true)
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        focusSubscription = NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)
+            .sink { [weak self] _ in self?.cancel() }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return event }
+            guard event.type == .keyDown else {
+                self.cancel()
+                return event
+            }
             if event.keyCode == 53 {
-                cancel(onRecordingChanged: self.onRecordingChanged)
+                self.cancel()
             } else if let shortcut = SelectedTextLookupShortcut.serialized(
                 keyCode: event.keyCode,
                 flags: CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
             ) {
                 self.onCapture?(shortcut)
-                cancel(onRecordingChanged: self.onRecordingChanged)
+                self.cancel()
             }
             return nil
         }
     }
 
-    func cancel(onRecordingChanged handler: ((Bool) -> Void)? = nil) {
+    func cancel() {
+        focusSubscription = nil
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
@@ -1401,7 +1451,7 @@ private final class ShortcutRecorderController: ObservableObject {
         guard isRecording else { return }
         isRecording = false
         onCapture = nil
-        let callback = handler ?? onRecordingChanged
+        let callback = onRecordingChanged
         onRecordingChanged = nil
         callback?(false)
     }

@@ -491,6 +491,8 @@ final class AppModel: ObservableObject {
 
     private let hotkeyManager = HotkeyManager()
     private let selectedTextLookupShortcutMonitor = SelectedTextLookupShortcutMonitor()
+    private var selectedTextLookupShortcutBinding: SelectedTextLookupShortcutBinding?
+    @Published private(set) var selectedTextLookupShortcutStatus: SelectedTextLookupShortcutStatus = .disabled
     private let captureService = ScreenCaptureService()
     private let ocrService = OCRService()
     private let selectedTextService = SelectedTextService()
@@ -597,6 +599,9 @@ final class AppModel: ObservableObject {
                 }
                 .store(in: &cancellables)
         }
+        selectedTextLookupShortcutMonitor.onStatusChanged = { [weak self] status in
+            self?.selectedTextLookupShortcutStatus = status
+        }
         bindSettings()
         selectedTextLookupShortcutMonitor.onTrigger = { [weak self] in
             self?.handleSelectedTextLookupShortcut()
@@ -604,7 +609,6 @@ final class AppModel: ObservableObject {
         resolvedPermissions.$status
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
-                self?.refreshSelectedTextLookupShortcut()
             }
             .store(in: &cancellables)
         hotkeyManager.onTrigger = { [weak self] in
@@ -639,6 +643,7 @@ final class AppModel: ObservableObject {
     }
 
     func handleHotkeyTrigger() {
+        guard selectedTextLookupShortcutBinding?.isRecording != true else { return }
         if #available(macOS 15.0, *) {
             ensureTranslationService()
         }
@@ -2910,15 +2915,16 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        Publishers.CombineLatest3(
-            settings.$goldendictIntegrationEnabled,
-            settings.$selectedTextLookupEnabled,
-            settings.$selectedTextLookupHotkey
-        )
-        .sink { [weak self] _, _, _ in
-            self?.refreshSelectedTextLookupShortcut()
+        selectedTextLookupShortcutBinding = SelectedTextLookupShortcutBinding(
+            settings: settings,
+            accessibility: permissions.$status.map(\.accessibility).eraseToAnyPublisher()
+        ) { [weak self] configuration in
+            self?.selectedTextLookupShortcutMonitor.start(
+                shortcut: configuration.shortcut,
+                isEnabled: configuration.isEnabled,
+                hasAccessibilityPermission: configuration.hasAccessibilityPermission
+            )
         }
-        .store(in: &cancellables)
 
         settings.$launchAtLogin
             .sink { value in
@@ -2954,6 +2960,7 @@ final class AppModel: ObservableObject {
 
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
+                self?.permissions.refreshAccessibilityStatus()
                 self?.restartHotkey()
             }
             .store(in: &cancellables)
@@ -2962,6 +2969,9 @@ final class AppModel: ObservableObject {
 
         workspaceNotifications.publisher(for: NSWorkspace.didActivateApplicationNotification)
             .sink { [weak self] notification in
+                if self?.settings.goldendictIntegrationEnabled == true {
+                    self?.permissions.refreshAccessibilityStatus()
+                }
                 self?.handleApplicationActivation(notification)
             }
             .store(in: &cancellables)
@@ -3009,25 +3019,15 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func refreshSelectedTextLookupShortcut() {
-        selectedTextLookupShortcutMonitor.start(
-            shortcut: settings.selectedTextLookupHotkey,
-            isEnabled: settings.goldendictIntegrationEnabled && settings.selectedTextLookupEnabled,
-            hasAccessibilityPermission: permissions.status.accessibility
-        )
-    }
-
     func setSelectedTextLookupShortcutRecording(_ isRecording: Bool) {
-        if isRecording {
-            selectedTextLookupShortcutMonitor.stop()
-        } else {
-            refreshSelectedTextLookupShortcut()
-        }
+        permissions.refreshAccessibilityStatus()
+        selectedTextLookupShortcutBinding?.isRecording = isRecording
     }
 
     private func handleSelectedTextLookupShortcut() {
         guard settings.goldendictIntegrationEnabled,
               settings.selectedTextLookupEnabled,
+              selectedTextLookupShortcutBinding?.isRecording != true,
               permissions.status.accessibility else { return }
         let mouseLocation = NSEvent.mouseLocation
         Task { [weak self] in

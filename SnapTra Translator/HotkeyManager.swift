@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import Combine
 import Foundation
 import OSLog
 
@@ -68,9 +69,74 @@ struct SelectedTextLookupShortcut: Equatable {
     ]
 }
 
+struct SelectedTextLookupShortcutConfiguration: Equatable {
+    let shortcut: String
+    var isEnabled: Bool
+    let hasAccessibilityPermission: Bool
+}
+
+/// Consume published values directly: @Published sends before the stored value changes.
+@MainActor
+final class SelectedTextLookupShortcutBinding {
+    private var subscription: AnyCancellable?
+    private var latestConfiguration: SelectedTextLookupShortcutConfiguration?
+    private let apply: (SelectedTextLookupShortcutConfiguration) -> Void
+    var isRecording = false {
+        didSet {
+            guard isRecording != oldValue else { return }
+            applyLatestConfiguration()
+        }
+    }
+
+    init(
+        settings: SettingsStore,
+        accessibility: AnyPublisher<Bool, Never>,
+        apply: @escaping (SelectedTextLookupShortcutConfiguration) -> Void
+    ) {
+        self.apply = apply
+        subscription = Publishers.CombineLatest4(
+            settings.$goldendictIntegrationEnabled,
+            settings.$selectedTextLookupEnabled,
+            settings.$selectedTextLookupHotkey,
+            accessibility
+        )
+        .map { integration, lookup, shortcut, accessibility in
+            SelectedTextLookupShortcutConfiguration(
+                shortcut: shortcut,
+                isEnabled: integration && lookup,
+                hasAccessibilityPermission: accessibility
+            )
+        }
+        .removeDuplicates()
+        .sink { [weak self] configuration in
+            self?.latestConfiguration = configuration
+            self?.applyLatestConfiguration()
+        }
+    }
+
+    private func applyLatestConfiguration() {
+        guard var configuration = latestConfiguration else { return }
+        configuration.isEnabled = configuration.isEnabled && !isRecording
+        apply(configuration)
+    }
+}
+
+enum SelectedTextLookupShortcutStatus: Equatable {
+    case disabled
+    case listening
+    case needsAccessibility
+    case invalidShortcut
+    case eventTapUnavailable
+}
+
 @MainActor
 final class SelectedTextLookupShortcutMonitor {
     var onTrigger: (() -> Void)?
+    var onStatusChanged: ((SelectedTextLookupShortcutStatus) -> Void)?
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "SnapTraTranslator",
+        category: "SelectedTextLookupShortcut"
+    )
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -78,8 +144,16 @@ final class SelectedTextLookupShortcutMonitor {
 
     func start(shortcut: String, isEnabled: Bool, hasAccessibilityPermission: Bool) {
         stop()
-        guard isEnabled, hasAccessibilityPermission,
-              let parsedShortcut = SelectedTextLookupShortcut.parse(shortcut) else { return }
+        guard isEnabled else { return }
+        guard hasAccessibilityPermission else {
+            onStatusChanged?(.needsAccessibility)
+            Self.logger.notice("Shortcut disabled: accessibility permission unavailable")
+            return
+        }
+        guard let parsedShortcut = SelectedTextLookupShortcut.parse(shortcut) else {
+            onStatusChanged?(.invalidShortcut)
+            return
+        }
         self.shortcut = parsedShortcut
 
         let eventMask = 1 << CGEventType.keyDown.rawValue
@@ -101,22 +175,28 @@ final class SelectedTextLookupShortcutMonitor {
             userInfo: context
         ) else {
             self.shortcut = nil
+            onStatusChanged?(.eventTapUnavailable)
+            Self.logger.error("Could not create the selected-text shortcut event tap")
             return
         }
 
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0) else {
             self.shortcut = nil
             CFMachPortInvalidate(eventTap)
+            onStatusChanged?(.eventTapUnavailable)
             return
         }
         self.eventTap = eventTap
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: eventTap, enable: true)
+        onStatusChanged?(.listening)
+        Self.logger.info("Shortcut listener active: \(shortcut, privacy: .public)")
     }
 
     func stop() {
         shortcut = nil
+        onStatusChanged?(.disabled)
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
             CFMachPortInvalidate(eventTap)

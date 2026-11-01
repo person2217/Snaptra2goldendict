@@ -1,9 +1,117 @@
 import AppKit
 import Carbon
+import Combine
 import XCTest
 @testable import SnapTra_Translator
 
 final class HotkeyManagerTests: XCTestCase {
+    func testRecordedOptionZMatchesPhysicalZAndRejectsOldQ() throws {
+        let value = try XCTUnwrap(SelectedTextLookupShortcut.serialized(keyCode: 6, flags: .maskAlternate))
+        XCTAssertEqual(value, "option+z")
+        let shortcut = try XCTUnwrap(SelectedTextLookupShortcut.parse(value))
+        let z = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 6, keyDown: true))
+        z.flags = .maskAlternate
+        XCTAssertTrue(shortcut.matches(z))
+        let q = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 12, keyDown: true))
+        q.flags = .maskAlternate
+        XCTAssertFalse(shortcut.matches(q))
+        z.flags = [.maskAlternate, .maskCommand]
+        XCTAssertFalse(shortcut.matches(z))
+    }
+
+    @MainActor
+    func testShortcutAndSwitchChangesApplySynchronously() {
+        let settings = makeShortcutSettings()
+        var applied: [SelectedTextLookupShortcutConfiguration] = []
+        let binding = SelectedTextLookupShortcutBinding(
+            settings: settings, accessibility: Just(true).eraseToAnyPublisher()
+        ) { applied.append($0) }
+        withExtendedLifetime(binding) {
+            settings.setGoldendictIntegrationEnabled(true)
+            XCTAssertEqual(applied.last?.isEnabled, true)
+            settings.selectedTextLookupHotkey = "option+z"
+            XCTAssertEqual(applied.last?.shortcut, "option+z")
+            settings.selectedTextLookupEnabled = false
+            XCTAssertEqual(applied.last?.isEnabled, false)
+            settings.selectedTextLookupEnabled = true
+            XCTAssertEqual(applied.last?.isEnabled, true)
+            settings.setGoldendictIntegrationEnabled(false)
+            XCTAssertEqual(applied.last?.isEnabled, false)
+        }
+    }
+
+    @MainActor
+    func testAccessibilityChangesApplyImmediatelyWithoutRepeatedRestarts() {
+        let settings = makeShortcutSettings()
+        settings.setGoldendictIntegrationEnabled(true)
+        let permission = ShortcutPermissionFixture()
+        var applied: [SelectedTextLookupShortcutConfiguration] = []
+        let binding = SelectedTextLookupShortcutBinding(
+            settings: settings, accessibility: permission.$isGranted.eraseToAnyPublisher()
+        ) { applied.append($0) }
+        withExtendedLifetime(binding) {
+            XCTAssertEqual(applied.last?.hasAccessibilityPermission, false)
+            permission.isGranted = true
+            XCTAssertEqual(applied.last?.hasAccessibilityPermission, true)
+            let count = applied.count
+            permission.isGranted = true
+            XCTAssertEqual(applied.count, count)
+            permission.isGranted = false
+            XCTAssertEqual(applied.last?.hasAccessibilityPermission, false)
+        }
+    }
+
+    @MainActor
+    func testRecordingStaysPausedUntilNewShortcutIsSaved() {
+        let settings = makeShortcutSettings()
+        settings.setGoldendictIntegrationEnabled(true)
+        let permission = ShortcutPermissionFixture()
+        var applied: [SelectedTextLookupShortcutConfiguration] = []
+        let binding = SelectedTextLookupShortcutBinding(
+            settings: settings, accessibility: permission.$isGranted.eraseToAnyPublisher()
+        ) { applied.append($0) }
+        binding.isRecording = true
+        settings.selectedTextLookupHotkey = "option+z"
+        XCTAssertEqual(applied.last?.isEnabled, false)
+        permission.isGranted = true
+        XCTAssertEqual(applied.last?.isEnabled, false)
+        binding.isRecording = false
+        XCTAssertEqual(applied.last, SelectedTextLookupShortcutConfiguration(
+            shortcut: "option+z", isEnabled: true, hasAccessibilityPermission: true
+        ))
+    }
+
+    @MainActor
+    func testCancellingRecordingRestoresOldShortcutAndRespectsDisable() {
+        let settings = makeShortcutSettings()
+        settings.setGoldendictIntegrationEnabled(true)
+        var applied: [SelectedTextLookupShortcutConfiguration] = []
+        let binding = SelectedTextLookupShortcutBinding(
+            settings: settings, accessibility: Just(true).eraseToAnyPublisher()
+        ) { applied.append($0) }
+        binding.isRecording = true
+        binding.isRecording = false
+        XCTAssertEqual(applied.last?.shortcut, "option+q")
+        XCTAssertEqual(applied.last?.isEnabled, true)
+        binding.isRecording = true
+        settings.setGoldendictIntegrationEnabled(false)
+        binding.isRecording = false
+        XCTAssertEqual(applied.last?.isEnabled, false)
+    }
+
+    @MainActor
+    private func makeShortcutSettings() -> SettingsStore {
+        let suite = "HotkeyManagerTests.Shortcut.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return SettingsStore(defaults: defaults, loginItemStatus: false)
+    }
+
+    @MainActor
+    private final class ShortcutPermissionFixture {
+        @Published var isGranted = false
+    }
+
     func testSelectedTextLookupShortcutParsesOptionQ() {
         let shortcut = SelectedTextLookupShortcut.parse("option+q")
 
