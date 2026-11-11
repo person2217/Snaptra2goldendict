@@ -1,0 +1,15 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+build/
+build-output/
+releases/
+*.app/
+*.dSYM/
+*.xcresult/
+*.zip
+*.bundle
+*.log
+xcuserdata/
+*.xcuserstate
